@@ -5,18 +5,19 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 from pytubefix import Search
+from collections import deque
 import yt_dlp
 
+fila_de_musica = {}
+loop_de_musica = {}
+loop_da_fila = {}
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
 
-YDL_OPTIONS = {"format": "bestaudio/best", "noplaylist": True}
-
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-
 if not DISCORD_TOKEN:
     print("ERRO: DISCORD_TOKEN não encontrado no arquivo .env")
     print("Por favor, adicione seu token do Discord no arquivo .env")
@@ -45,6 +46,21 @@ def salvar_palavras_proibidas(palavras):
 
 
 palavras_proibidas = carregar_palavras_proibidas()
+
+
+def tocar_mucic(guild_id):
+    fila = fila_de_musica.get(guild_id)
+    vc = bot.get_guild(guild_id).voice_client
+    if not vc and fila or len(fila) == 0:
+        return
+    if loop_de_musica.get(guild_id):
+        music = fila[0]
+    else:
+        music = fila.popleft()
+    source = discord.FFmpegOpusAudio(music["audio"], **FFMPEG_OPTIONS)
+    vc.play(source, after=lambda e: tocar_mucic(guild_id))
+    if loop_da_fila.get(guild_id) and not loop_de_musica.get(guild_id):
+        fila.append(music)
 
 
 @bot.event
@@ -124,7 +140,7 @@ async def on_message(message):
 @bot.tree.command(name="ping", description="Mostra a latência do bot")
 async def ping(interaction: discord.Interaction):
     latency_ms = round(bot.latency * 1000)
-    await interaction.response.send_message(f"🏓 Pong! A latência é de {latency_ms}ms")
+    await interaction.response.send_message(f"A latência é de {latency_ms}ms")
 
 
 @bot.tree.command(name="id_servidor", description="Mostra o ID do servidor")
@@ -237,39 +253,109 @@ async def play(interaction: discord.Integration):
 
 
 @bot.tree.command(name="play", description="colocar musica e a pesquisa é no youtube")
-async def play(interaction: discord.Interaction, url: str):
+async def play(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
     if not interaction.user.voice:
         await interaction.followup.send(
             "❌ entre em uma call de voz, por favor", ephemeral=True
         )
         return
+    guuild_id = interaction.guild_id
+    if guuild_id not in fila_de_musica:
+        fila_de_musica[guuild_id] = deque()
     voice_channel = interaction.user.voice.channel
     if not interaction.guild.voice_client:
         await voice_channel.connect()
     voice_client = interaction.guild.voice_client
-    resultado = Search(url)
-    videos = resultado.videos[0]
-    url_achado = videos.watch_url
-    titulo = videos.title
-    with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-        info = ydl.extract_info(url_achado, download=False)
-        audio_url = info["url"]
-    source = discord.FFmpegOpusAudio(audio_url, **FFMPEG_OPTIONS)
-    if voice_client.is_playing():
-        voice_client.stop()
-    voice_client.play(source)
-    await interaction.followup.send(f"🎶 Tocando agora: **{titulo}**")
+    resultado = Search(name)
+    i = 0
+    while i < len(resultado.videos):
+        try:
+            videos = resultado.videos[i]
+            with yt_dlp.YoutubeDL({"format": "bestaudio"}) as ydl:
+                info = ydl.extract_info(videos.watch_url, download=False)
+            titulo = videos.title
+            audio_url = info["url"]
+        except Exception as e:
+            i += 1
+        else:
+            break
+    music = {"title": titulo, "audio": audio_url}
+    fila_de_musica[guuild_id].append(music)
+    if not voice_client.is_playing():
+        tocar_mucic(guuild_id)
+        await interaction.followup.send(f"🎶 Tocando agora: **{titulo}**")
+    else:
+        await interaction.followup.send(
+            f"➕ adicionado na fila de musica: **{titulo}**"
+        )
 
+@bot.tree.command(name="fila", description="mostar toda o fila no momento atual")
+async def search(interaction: discord.Interaction):
+    fila = fila_de_musica.get(interaction.guild_id)
+    vc = bot.get_guild(interaction.guild_id).voice_client
+    if not vc:
+        await interaction.response.send_message("❗ não tem musica ainda", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title="🎶 fila das musicas",
+        description="Lista de todas as musicas atuais e sua ordem",
+        color=discord.Colour.purple(),
+    )
+    i = 0
+    for musicparaolhar in fila:
+        embed.add_field(
+            name=f"{i + 1}:",
+            value=f"{musicparaolhar['title']}",
+            inline=False,
+        )
+        i += 1
+    embed.set_footer(text=f"Bot: {bot.user.name}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(
     name="search", description="pesquisar videos do youtube e mostrar para todo mundo"
 )
-async def search(interaction: discord.Interaction, url: str):
-    print(url)
-    resultado = Search(url)
+async def search(interaction: discord.Interaction, name: str):
+    resultado = Search(name)
     for videos in resultado.videos:
         await interaction.response.send_message(videos.watch_url)
+
+
+@bot.tree.command(
+    name="loop-da-fila",
+    description="ativar ou destivar o loop da fila para que a fila fique em loop para sempre",
+)
+async def loop(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    if guild_id not in loop_da_fila:
+        loop_da_fila[guild_id] = True
+    else:
+        loop_da_fila[guild_id] = not loop_da_fila[guild_id]
+
+    status = loop_da_fila[guild_id]
+    if status:
+        await interaction.response.send_message("✅ ativado o loop de fila")
+    else:
+        await interaction.response.send_message("❌ desativado o loop de fila")
+
+
+@bot.tree.command(
+    name="loop-de-musica",
+    description="ativar ou desativar o loop da musica para que a musica fique em loop para sempre",
+)
+async def loop_mucis(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    if guild_id not in loop_de_musica:
+        loop_de_musica[guild_id] = True
+    else:
+        loop_de_musica[guild_id] = not loop_de_musica[guild_id]
+
+    status = loop_de_musica[guild_id]
+    if status:
+        await interaction.response.send_message("✅ ativado o loop de musica")
+    else:
+        await interaction.response.send_message("❌ desativado o loop de muica")
 
 
 @bot.tree.command(name="help", description="Mostra todos os comandos disponíveis")
@@ -284,6 +370,51 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="📋 /id_servidor",
         value="Mostra informações e ID do servidor",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎶/play",
+        value="ouvir musica e se ja tiver tocando adiciona em uma fila de musicas",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔄 /loop-de-musica",
+        value="ele disativa e ativa loop de uma so musica",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔂 /loop-da-fila",
+        value="ele disativa e ativa loop o loop da fila",
+        inline=False,
+    )
+    embed.add_field(
+        name="⏩ /skip",
+        value="pode skipar uma musica",
+        inline=False,
+    )
+    embed.add_field(
+        name="📝 /fila",
+        value="mostra o status da fila no momento",
+        inline=False,
+    )
+    embed.add_field(
+        name="▶ /pause",
+        value="pode parar a musica",
+        inline=False,
+    )
+    embed.add_field(
+        name="⏸ /despausar",
+        value="pode parar a musica",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔚 /leave",
+        value="mandar ele se desconectar da call",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔙 /return",
+        value="mandar ele se conectar na call",
         inline=False,
     )
     embed.add_field(
