@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 from pytubefix import Search
+from pytubefix import YouTube
 from collections import deque
-import yt_dlp
 
 fila_de_musica = {}
 loop_de_musica = {}
@@ -57,7 +57,7 @@ def tocar_mucic(guild_id):
         music = fila[0]
     else:
         music = fila.popleft()
-    source = discord.FFmpegOpusAudio(music["audio"], **FFMPEG_OPTIONS)
+    source = discord.FFmpegPCMAudio(music["audio"], **FFMPEG_OPTIONS)
     vc.play(source, after=lambda e: tocar_mucic(guild_id))
     if loop_da_fila.get(guild_id) and not loop_de_musica.get(guild_id):
         fila.append(music)
@@ -236,24 +236,76 @@ async def listar_palavras(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-@bot.tree.command(name="stop", description="parar musica quando quiser")
-async def play(interaction: discord.Integration):
-    vc = interaction.guild.voice_client
-
-    if vc and vc.is_connected():
-        await vc.disconnect()
+@bot.tree.command(name="return", description="mando o bot entrar para a call")
+async def voltar(interaction: discord.Integration):
+    voice_client = interaction.guild.voice_client
+    voice_channel = interaction.user.voice.channel
+    if not voice_client:
+        await voice_channel.connect()
         await interaction.response.send_message(
-            f"🔊 {bot.user.mention} saiu do canal de voz", ephemeral=True
+            f"🔙 {bot.user.mention} connectado na call", ephemeral=True
         )
     else:
         await interaction.response.send_message(
             f"❌ {bot.user.mention} não está em nenhum canal de voz", ephemeral=True
         )
 
+@bot.tree.command(name="leave", description="mando o bot para fora da call")
+async def leave(interaction: discord.Integration):
+    voice_client = interaction.guild.voice_client
+    if voice_client:
+        await voice_client.disconnect()
+        await interaction.response.send_message(
+            f"🔚 {bot.user.mention} desconectado da call", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"❌ {bot.user.mention} não está em nenhum canal de voz", ephemeral=True
+        )
+
+@bot.tree.command(name="skip", description="skipar uma musica")
+async def skipar(interaction: discord.Integration):
+    voice_client = discord.utils.get(bot.voice_clients, guild=interaction.guild)
+    if voice_client and voice_client.is_playing():
+        voice_client.stop()
+        await interaction.response.send_message(
+            f"⏩ {bot.user.mention} foi skipado a musica", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"❌ {bot.user.mention} não está em nenhum canal de voz", ephemeral=True
+        )
+
+@bot.tree.command(name="despausar", description="despausar musica")
+async def despaussar(interaction: discord.Integration):
+    voice_client = discord.utils.get(bot.voice_clients, guild=interaction.guild)
+    if voice_client and voice_client.is_paused():
+        voice_client.resume()
+        await interaction.response.send_message(
+            f"⏸ {bot.user.mention} foi despausado", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"❌ {bot.user.mention} não está em nenhum canal de voz", ephemeral=True
+        )
+
+@bot.tree.command(name="pausar", description="parar musica quando quiser")
+async def pausar(interaction: discord.Integration):
+    voice_client = interaction.guild.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.pause()
+        await interaction.response.send_message(
+            f"▶ {bot.user.mention} foi pausado", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"❌ {bot.user.mention} não esta ", ephemeral=True
+        )
+
 
 @bot.tree.command(name="play", description="colocar musica e a pesquisa é no youtube")
 async def play(interaction: discord.Interaction, name: str):
+    audio_url = None
     await interaction.response.defer()
     if not interaction.user.voice:
         await interaction.followup.send(
@@ -268,19 +320,22 @@ async def play(interaction: discord.Interaction, name: str):
         await voice_channel.connect()
     voice_client = interaction.guild.voice_client
     resultado = Search(name)
-    i = 0
-    while i < len(resultado.videos):
+    for video in resultado.videos:
         try:
-            videos = resultado.videos[i]
-            with yt_dlp.YoutubeDL({"format": "bestaudio"}) as ydl:
-                info = ydl.extract_info(videos.watch_url, download=False)
-            titulo = videos.title
-            audio_url = info["url"]
-        except Exception as e:
-            i += 1
-        else:
+            yt = YouTube(video.watch_url)
+            audio_url = yt.streams.filter(only_audio=True).first()
+            titulo = video.title
             break
-    music = {"title": titulo, "audio": audio_url}
+        except Exception as e:
+            print(f"Falha ao extrair áudio: {e}")
+
+    if not audio_url:
+        await interaction.followup.send(
+            "❌ Não foi possível obter áudio dessa música.",
+            ephemeral=True
+        )
+        return
+    music = {"title": titulo, "audio": audio_url.url}
     fila_de_musica[guuild_id].append(music)
     if not voice_client.is_playing():
         tocar_mucic(guuild_id)
